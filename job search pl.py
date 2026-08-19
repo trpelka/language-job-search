@@ -1,67 +1,79 @@
-import csv
-import email
-import imaplib
-import os
 import re
 import sqlite3
-import sys
-from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import MagicMock
-from urllib.parse import quote
+from urllib.parse import quote_plus, urljoin
 
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
 
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
 BASE_DIR = Path(__file__).resolve().parent
 
 DATABASE = BASE_DIR / "local_jobs.db"
 CSV_FILE = BASE_DIR / "jobs.csv"
 
+LOCATION = "Poland"
+
 SEARCH_TERMS = [
     "translator",
     "localization",
-    "transcreation",
+    "localisation",
     "copywriter",
     "content writer",
-    "technical writer",
-    "language analyst",
-    "linguist",
-    "multilingual",
-    "AI language",
-    "research analyst",
-    "OSINT",
+    "content specialist",
     "proofreader",
     "editor",
+    "linguist",
+    "language specialist",
+    "transcreation",
+    "technical writer",
+    "English translator",
+    "French translator",
+    "German translator",
+    "Spanish translator",
+    "Italian translator",
+    "Portuguese translator",
+    "Dutch translator",
+    "Romanian translator",
 ]
 
-LOCATION = "Poland"
-RESULTS_WANTED = 20
-HOURS_OLD = 72
+LANGUAGES = [
+    "English",
+    "French",
+    "German",
+    "Spanish",
+    "Italian",
+    "Portuguese",
+    "Dutch",
+    "Romanian",
+    "Swedish",
+    "Norwegian",
+    "Danish",
+    "Russian",
+    "Ukrainian",
+    "Polish",
+]
 
-COUNTRY_INDEED = "poland"
-
-REQUEST_TIMEOUT = 30
+REQUEST_TIMEOUT = 20
 
 HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (X11; Linux x86_64) "
-        "AppleWebKit/537.36 "
-        "(KHTML, like Gecko) "
-        "Chrome/138.0 Safari/537.36"
-    )
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/139.0 Safari/537.36"
+    ),
+    "Accept-Language": "en-US,en;q=0.9,pl;q=0.8",
 }
 
 
-def configure_geocoder():
-    geocoder = MagicMock()
-    ip_result = MagicMock()
-    ip_result.country = "usa"
-    geocoder.ip.return_value = ip_result
-    sys.modules["geocoder"] = geocoder
-
+# ============================================================
+# DATABASE
+# ============================================================
 
 def initialize_database():
     connection = sqlite3.connect(DATABASE)
@@ -81,595 +93,669 @@ def initialize_database():
     )
 
     connection.commit()
-
     return connection
 
 
-def job_seen(connection, job_url):
-    return (
-        connection.execute(
-            "SELECT 1 FROM seen_jobs WHERE job_url = ?",
-            (job_url,),
-        ).fetchone()
-        is not None
-    )
+# ============================================================
+# HELPERS
+# ============================================================
+
+def clean_text(value):
+    if value is None:
+        return ""
+
+    value = str(value)
+    value = re.sub(r"\s+", " ", value)
+    return value.strip()
 
 
-def save_job(connection, job):
-    connection.execute(
-        """
-        INSERT OR IGNORE INTO seen_jobs
-        (
-            job_url,
-            title,
-            company,
-            location,
-            source,
-            description
-        )
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (
-            job["job_url"],
-            job["title"],
-            job["company"],
-            job["location"],
-            job["source"],
-            job["description"],
-        ),
-    )
+def absolute_url(url, base_url):
+    if not url:
+        return ""
 
-    connection.commit()
+    return urljoin(base_url, url)
 
 
-def make_job(
-    title="",
-    company="",
-    location="",
-    source="",
-    url="",
-    description="",
-):
+def make_job(title, company, location, source, url, description=""):
     return {
-        "title": str(title).strip(),
-        "company": str(company).strip(),
-        "location": str(location).strip(),
-        "source": str(source).strip(),
-        "job_url": str(url).strip(),
-        "description": str(description).strip(),
+        "title": clean_text(title),
+        "company": clean_text(company),
+        "location": clean_text(location),
+        "source": clean_text(source),
+        "job_url": clean_text(url),
+        "description": clean_text(description),
     }
 
 
-def scrape_jobspy_site(site):
-    from jobspy import scrape_jobs
-
-    results = []
-
-    for term in SEARCH_TERMS:
-        print(f"[{site}] searching: {term}")
-
-        try:
-            jobs: pd.DataFrame = scrape_jobs(
-                site_name=site,
-                search_term=term,
-                location=LOCATION,
-                results_wanted=RESULTS_WANTED,
-                hours_old=HOURS_OLD,
-                country_indeed=COUNTRY_INDEED,
-            )
-
-        except Exception as error:
-            print(f"[{site}] failed for '{term}': {error}")
-            continue
-
-        if jobs is None or jobs.empty:
-            continue
-
-        for _, row in jobs.iterrows():
-            url = str(row.get("job_url", "")).strip()
-
-            if not url:
-                continue
-
-            results.append(
-                make_job(
-                    title=row.get("title", ""),
-                    company=row.get("company", ""),
-                    location=row.get("location", ""),
-                    source=site,
-                    url=url,
-                    description=row.get("description", ""),
-                )
-            )
-
-    return results
-
-
-def fetch_isitfair(source):
-    results = []
-
-    for term in SEARCH_TERMS:
-        print(f"[{source}] searching: {term}")
-
-        try:
-            response = requests.get(
-                "https://isitfair.pl/api/v1/offers/search",
-                params={
-                    "offer_status": "active",
-                    "offer_source": source,
-                    "search": term,
-                    "page": 1,
-                },
-                headers=HEADERS,
-                timeout=REQUEST_TIMEOUT,
-            )
-
-            response.raise_for_status()
-            data = response.json()
-
-        except Exception as error:
-            print(f"[{source}] failed for '{term}': {error}")
-            continue
-
-        offers = data
-
-        if isinstance(data, dict):
-            offers = data.get("offers", data.get("results", []))
-
-        if not isinstance(offers, list):
-            continue
-
-        for offer in offers:
-            if not isinstance(offer, dict):
-                continue
-
-            url = (
-                offer.get("url")
-                or offer.get("link")
-                or offer.get("job_url")
-                or ""
-            )
-
-            title = offer.get("title", "")
-            company = offer.get("company", "")
-            location = offer.get("location", "")
-            description = (
-                offer.get("description")
-                or offer.get("snippet")
-                or ""
-            )
-
-            if not url or not title:
-                continue
-
-            results.append(
-                make_job(
-                    title=title,
-                    company=company,
-                    location=location,
-                    source=source,
-                    url=url,
-                    description=description,
-                )
-            )
-
-    return results
-
-
-def fetch_jooble():
-    api_key = os.getenv("JOOBLE_API_KEY", "").strip()
-
-    if not api_key:
-        print("[jooble] JOOBLE_API_KEY not configured - skipped")
-        return []
-
-    results = []
-
-    endpoint = f"https://pl.jooble.org/api/{api_key}"
-
-    for term in SEARCH_TERMS:
-        print(f"[jooble] searching: {term}")
-
-        try:
-            response = requests.post(
-                endpoint,
-                json={
-                    "keywords": term,
-                    "location": LOCATION,
-                    "page": 1,
-                    "ResultOnPage": RESULTS_WANTED,
-                    "companysearch": False,
-                },
-                headers={
-                    **HEADERS,
-                    "Content-Type": "application/json",
-                },
-                timeout=REQUEST_TIMEOUT,
-            )
-
-            response.raise_for_status()
-            data = response.json()
-
-        except Exception as error:
-            print(f"[jooble] failed for '{term}': {error}")
-            continue
-
-        for offer in data.get("jobs", []):
-            url = offer.get("link", "")
-
-            if not url:
-                continue
-
-            results.append(
-                make_job(
-                    title=offer.get("title", ""),
-                    company=offer.get("company", ""),
-                    location=offer.get("location", ""),
-                    source="jooble",
-                    url=url,
-                    description=offer.get("snippet", ""),
-                )
-            )
-
-    return results
-
-
-def fetch_theprotocol():
-    results = []
-
-    for term in SEARCH_TERMS:
-        print(f"[theprotocol.it] searching: {term}")
-
-        url = (
-            "https://theprotocol.it/praca?kw="
-            + quote(term)
+def request_page(url, params=None):
+    try:
+        response = requests.get(
+            url,
+            params=params,
+            headers=HEADERS,
+            timeout=REQUEST_TIMEOUT,
         )
 
+        response.raise_for_status()
+        return response.text
+
+    except Exception as error:
+        print(f"  Request failed: {error}")
+        return None
+
+
+# ============================================================
+# JOBSPY COLLECTOR
+#
+# Uses JobSpy where supported.
+# A failure here does NOT stop the other collectors.
+# ============================================================
+
+def collect_jobspy():
+    jobs = []
+
+    try:
+        from jobspy import scrape_jobs
+    except Exception as error:
+        print(f"JobSpy unavailable: {error}")
+        return jobs
+
+    print("\n========== JOBSPY ==========")
+
+    for term in SEARCH_TERMS:
+        print(f"JobSpy: {term}")
+
         try:
-            response = requests.get(
-                url,
-                headers=HEADERS,
-                timeout=REQUEST_TIMEOUT,
+            data = scrape_jobs(
+                site_name=[
+                    "linkedin",
+                    "indeed",
+                    "glassdoor",
+                ],
+                search_term=term,
+                location=LOCATION,
+                results_wanted=50,
+                hours_old=168,
+                country_indeed="poland",
             )
 
-            response.raise_for_status()
+            if data is None or data.empty:
+                continue
 
-            soup = BeautifulSoup(
-                response.text,
-                "html.parser",
-            )
+            for _, row in data.iterrows():
+                jobs.append(
+                    make_job(
+                        row.get("title", ""),
+                        row.get("company", ""),
+                        row.get("location", ""),
+                        row.get("site", ""),
+                        row.get("job_url", ""),
+                        row.get("description", ""),
+                    )
+                )
+
+            print(f"  {len(data)} results")
 
         except Exception as error:
-            print(
-                f"[theprotocol.it] "
-                f"failed for '{term}': {error}"
-            )
+            print(f"  Failed: {error}")
+
+    return jobs
+
+
+# ============================================================
+# PRACUJ.PL
+# ============================================================
+
+def collect_pracuj():
+    jobs = []
+
+    print("\n========== PRACUJ.PL ==========")
+
+    base_url = "https://www.pracuj.pl"
+
+    for term in SEARCH_TERMS:
+        url = f"{base_url}/praca/{quote_plus(term)};kw"
+
+        html = request_page(url)
+
+        if not html:
             continue
 
-        links = soup.find_all("a", href=True)
+        soup = BeautifulSoup(html, "html.parser")
 
-        seen_urls = set()
-
-        for link in links:
+        for link in soup.find_all("a", href=True):
             href = link.get("href", "")
 
-            if ",oferta," not in href:
+            if "/oferta/" not in href:
                 continue
 
-            if href.startswith("/"):
-                job_url = "https://theprotocol.it" + href
-            elif href.startswith("http"):
-                job_url = href
-            else:
-                continue
-
-            if job_url in seen_urls:
-                continue
-
-            seen_urls.add(job_url)
-
-            title = link.get_text(
-                " ",
-                strip=True,
-            )
+            title = clean_text(link.get_text(" ", strip=True))
 
             if not title:
                 continue
 
-            parent = link.parent
-
-            description = ""
-
-            if parent:
-                description = parent.get_text(
-                    " ",
-                    strip=True,
-                )
-
-            results.append(
+            jobs.append(
                 make_job(
-                    title=title,
-                    company="",
-                    location="",
-                    source="theprotocol.it",
-                    url=job_url,
-                    description=description,
+                    title,
+                    "",
+                    LOCATION,
+                    "pracuj.pl",
+                    absolute_url(href, base_url),
                 )
             )
 
-    return results
+    return jobs
 
 
-def fetch_linkedin_email_jobs():
-    email_user = os.getenv("EMAIL_USER", "").strip()
-    email_password = os.getenv("EMAIL_PASSWORD", "").strip()
+# ============================================================
+# JUST JOIN IT
+# ============================================================
 
-    if not email_user or not email_password:
-        print(
-            "[linkedin-email] "
-            "EMAIL_USER/EMAIL_PASSWORD not configured - skipped"
-        )
-        return []
+def collect_justjoinit():
+    jobs = []
 
-    results = []
+    print("\n========== JUST JOIN IT ==========")
 
-    try:
-        mailbox = imaplib.IMAP4_SSL("imap.gmail.com")
-
-        mailbox.login(
-            email_user,
-            email_password,
+    for term in SEARCH_TERMS:
+        url = (
+            "https://justjoin.it/job-offers/all-locations/"
+            + quote_plus(term)
         )
 
-        mailbox.select("INBOX")
+        html = request_page(url)
 
-        status, data = mailbox.search(
-            None,
-            '(FROM "jobalerts-noreply@linkedin.com")',
-        )
-
-        if status != "OK":
-            print("[linkedin-email] search failed")
-            mailbox.logout()
-            return []
-
-        message_ids = data[0].split()
-
-        for message_id in message_ids[-100:]:
-            status, message_data = mailbox.fetch(
-                message_id,
-                "(RFC822)",
-            )
-
-            if status != "OK":
-                continue
-
-            raw_email = message_data[0][1]
-
-            message = email.message_from_bytes(
-                raw_email
-            )
-
-            html = ""
-
-            if message.is_multipart():
-                for part in message.walk():
-                    content_type = part.get_content_type()
-
-                    if content_type == "text/html":
-                        payload = part.get_payload(
-                            decode=True
-                        )
-
-                        if payload:
-                            html = payload.decode(
-                                "utf-8",
-                                errors="ignore",
-                            )
-
-                        break
-
-            else:
-                payload = message.get_payload(
-                    decode=True
-                )
-
-                if payload:
-                    html = payload.decode(
-                        "utf-8",
-                        errors="ignore",
-                    )
-
-            if not html:
-                continue
-
-            soup = BeautifulSoup(
-                html,
-                "html.parser",
-            )
-
-            for link in soup.find_all(
-                "a",
-                href=True,
-            ):
-                href = link["href"]
-
-                if "linkedin.com/jobs/" not in href:
-                    continue
-
-                title = link.get_text(
-                    " ",
-                    strip=True,
-                )
-
-                if not title:
-                    continue
-
-                results.append(
-                    make_job(
-                        title=title,
-                        company="",
-                        location="",
-                        source="linkedin-email",
-                        url=href,
-                        description="",
-                    )
-                )
-
-        mailbox.logout()
-
-    except Exception as error:
-        print(
-            f"[linkedin-email] failed: {error}"
-        )
-
-    return results
-
-
-def deduplicate_jobs(jobs):
-    unique = {}
-    seen_urls = set()
-
-    for job in jobs:
-        url = job["job_url"]
-
-        if not url:
+        if not html:
             continue
 
-        normalized = re.sub(
-            r"[?#].*$",
-            "",
-            url,
+        soup = BeautifulSoup(html, "html.parser")
+
+        for link in soup.find_all("a", href=True):
+            href = link.get("href", "")
+
+            if "/job-offer/" not in href:
+                continue
+
+            title = clean_text(link.get_text(" ", strip=True))
+
+            if not title:
+                continue
+
+            jobs.append(
+                make_job(
+                    title,
+                    "",
+                    LOCATION,
+                    "justjoin.it",
+                    absolute_url(href, "https://justjoin.it"),
+                )
+            )
+
+    return jobs
+
+
+# ============================================================
+# NO FLUFF JOBS
+# ============================================================
+
+def collect_nofluffjobs():
+    jobs = []
+
+    print("\n========== NO FLUFF JOBS ==========")
+
+    base_url = "https://nofluffjobs.com"
+
+    for term in SEARCH_TERMS:
+        url = (
+            f"{base_url}/pl/{quote_plus(term)}"
         )
 
-        if normalized in seen_urls:
+        html = request_page(url)
+
+        if not html:
             continue
 
-        seen_urls.add(normalized)
-        job["job_url"] = normalized
-        unique[normalized] = job
+        soup = BeautifulSoup(html, "html.parser")
 
-    return list(unique.values())
+        for link in soup.find_all("a", href=True):
+            href = link.get("href", "")
+
+            if "/pl/job/" not in href:
+                continue
+
+            title = clean_text(link.get_text(" ", strip=True))
+
+            if not title:
+                continue
+
+            jobs.append(
+                make_job(
+                    title,
+                    "",
+                    LOCATION,
+                    "nofluffjobs",
+                    absolute_url(href, base_url),
+                )
+            )
+
+    return jobs
 
 
-def write_csv(connection):
-    rows = connection.execute(
-        """
-        SELECT
-            title,
-            company,
-            location,
-            source,
-            job_url,
-            description,
-            found_at
-        FROM seen_jobs
-        ORDER BY found_at DESC
-        """
-    ).fetchall()
+# ============================================================
+# ROCKETJOBS
+# ============================================================
 
-    fieldnames = [
+def collect_rocketjobs():
+    jobs = []
+
+    print("\n========== ROCKETJOBS ==========")
+
+    base_url = "https://rocketjobs.pl"
+
+    for term in SEARCH_TERMS:
+        url = f"{base_url}/?query={quote_plus(term)}"
+
+        html = request_page(url)
+
+        if not html:
+            continue
+
+        soup = BeautifulSoup(html, "html.parser")
+
+        for link in soup.find_all("a", href=True):
+            href = link.get("href", "")
+
+            if "/oferta/" not in href:
+                continue
+
+            title = clean_text(link.get_text(" ", strip=True))
+
+            if not title:
+                continue
+
+            jobs.append(
+                make_job(
+                    title,
+                    "",
+                    LOCATION,
+                    "rocketjobs",
+                    absolute_url(href, base_url),
+                )
+            )
+
+    return jobs
+
+
+# ============================================================
+# BULLDOGJOB
+# ============================================================
+
+def collect_bulldogjob():
+    jobs = []
+
+    print("\n========== BULLDOGJOB ==========")
+
+    base_url = "https://bulldogjob.pl"
+
+    for term in SEARCH_TERMS:
+        url = f"{base_url}/it-jobs?search={quote_plus(term)}"
+
+        html = request_page(url)
+
+        if not html:
+            continue
+
+        soup = BeautifulSoup(html, "html.parser")
+
+        for link in soup.find_all("a", href=True):
+            href = link.get("href", "")
+
+            if "/companies/" not in href and "/jobs/" not in href:
+                continue
+
+            title = clean_text(link.get_text(" ", strip=True))
+
+            if not title:
+                continue
+
+            jobs.append(
+                make_job(
+                    title,
+                    "",
+                    LOCATION,
+                    "bulldogjob",
+                    absolute_url(href, base_url),
+                )
+            )
+
+    return jobs
+
+
+# ============================================================
+# JOOBLE
+# ============================================================
+
+def collect_jooble():
+    jobs = []
+
+    print("\n========== JOOBLE ==========")
+
+    base_url = "https://pl.jooble.org"
+
+    for term in SEARCH_TERMS:
+        url = f"{base_url}/szukaj-prace/{quote_plus(term)}"
+
+        html = request_page(url)
+
+        if not html:
+            continue
+
+        soup = BeautifulSoup(html, "html.parser")
+
+        for link in soup.find_all("a", href=True):
+            href = link.get("href", "")
+
+            if not href:
+                continue
+
+            title = clean_text(link.get_text(" ", strip=True))
+
+            if len(title) < 5:
+                continue
+
+            if term.lower() not in title.lower():
+                continue
+
+            jobs.append(
+                make_job(
+                    title,
+                    "",
+                    LOCATION,
+                    "jooble",
+                    absolute_url(href, base_url),
+                )
+            )
+
+    return jobs
+
+
+# ============================================================
+# THE PROTOCOL
+# ============================================================
+
+def collect_theprotocol():
+    jobs = []
+
+    print("\n========== THE PROTOCOL ==========")
+
+    base_url = "https://theprotocol.it"
+
+    for term in SEARCH_TERMS:
+        url = f"{base_url}/szukaj?query={quote_plus(term)}"
+
+        html = request_page(url)
+
+        if not html:
+            continue
+
+        soup = BeautifulSoup(html, "html.parser")
+
+        for link in soup.find_all("a", href=True):
+            href = link.get("href", "")
+
+            if "/oferta/" not in href:
+                continue
+
+            title = clean_text(link.get_text(" ", strip=True))
+
+            if not title:
+                continue
+
+            jobs.append(
+                make_job(
+                    title,
+                    "",
+                    LOCATION,
+                    "theprotocol",
+                    absolute_url(href, base_url),
+                )
+            )
+
+    return jobs
+
+
+# ============================================================
+# GENERIC GOOGLE SEARCH COLLECTOR
+#
+# This is intentionally limited to job-board domains.
+# It can discover pages even when a board has no direct
+# collector above.
+# ============================================================
+
+def collect_google_results():
+    jobs = []
+
+    print("\n========== SEARCH DISCOVERY ==========")
+
+    domains = [
+        "pracuj.pl",
+        "justjoin.it",
+        "nofluffjobs.com",
+        "rocketjobs.pl",
+        "bulldogjob.pl",
+        "jooble.org",
+        "theprotocol.it",
+    ]
+
+    for term in SEARCH_TERMS[:10]:
+        query = (
+            f'"{term}" '
+            f'Poland '
+            f'({" OR ".join(f"site:{domain}" for domain in domains)})'
+        )
+
+        url = (
+            "https://www.google.com/search?q="
+            + quote_plus(query)
+        )
+
+        html = request_page(url)
+
+        if not html:
+            continue
+
+        soup = BeautifulSoup(html, "html.parser")
+
+        for result in soup.select("div.MjjYud"):
+            link = result.find("a", href=True)
+
+            if not link:
+                continue
+
+            href = link.get("href", "")
+
+            title_tag = result.find(["h3"])
+
+            if not title_tag:
+                continue
+
+            title = clean_text(title_tag.get_text())
+
+            if not title:
+                continue
+
+            if href.startswith("/url?q="):
+                href = href.split("/url?q=", 1)[1].split("&", 1)[0]
+
+            jobs.append(
+                make_job(
+                    title,
+                    "",
+                    LOCATION,
+                    "search-discovery",
+                    href,
+                )
+            )
+
+    return jobs
+
+
+# ============================================================
+# NORMALIZATION / DEDUPLICATION
+# ============================================================
+
+def normalize_jobs(jobs):
+    if not jobs:
+        return pd.DataFrame(
+            columns=[
+                "title",
+                "company",
+                "location",
+                "source",
+                "job_url",
+                "description",
+            ]
+        )
+
+    data = pd.DataFrame(jobs)
+
+    columns = [
         "title",
         "company",
         "location",
         "source",
         "job_url",
         "description",
-        "found_at",
     ]
 
-    with CSV_FILE.open(
-        "w",
-        newline="",
-        encoding="utf-8",
-    ) as file:
-        writer = csv.writer(file)
+    for column in columns:
+        if column not in data.columns:
+            data[column] = ""
 
-        writer.writerow(fieldnames)
+    data = data[columns]
 
-        writer.writerows(rows)
+    for column in columns:
+        data[column] = data[column].fillna("").astype(str).str.strip()
 
-    print(
-        f"CSV written: {CSV_FILE}"
+    data = data[data["job_url"] != ""]
+
+    data = data.drop_duplicates(
+        subset=["job_url"],
+        keep="first",
     )
 
-    print(
-        f"Total stored jobs: {len(rows)}"
-    )
+    return data
 
 
-def run():
-    print("=" * 60)
-    print("JOB SCRAPER")
-    print("=" * 60)
+# ============================================================
+# DATABASE + CSV
+# ============================================================
 
+def save_jobs(jobs):
     connection = initialize_database()
 
-    all_jobs = []
-
     try:
-        all_jobs.extend(
-            scrape_jobspy_site("indeed")
-        )
+        new_count = 0
 
-        all_jobs.extend(
-            fetch_isitfair("justjoin.it")
-        )
-
-        all_jobs.extend(
-            fetch_isitfair("pracuj.pl")
-        )
-
-        all_jobs.extend(
-            fetch_isitfair("nofluffjobs.com")
-        )
-
-        all_jobs.extend(
-            fetch_theprotocol()
-        )
-
-        all_jobs.extend(
-            fetch_jooble()
-        )
-
-        all_jobs.extend(
-            fetch_linkedin_email_jobs()
-        )
-
-        all_jobs = deduplicate_jobs(all_jobs)
-
-        print(
-            f"\nCollected {len(all_jobs)} unique results."
-        )
-
-        new_jobs = 0
-
-        for job in all_jobs:
-            if job_seen(
-                connection,
-                job["job_url"],
-            ):
-                continue
-
-            save_job(
-                connection,
-                job,
+        for _, row in jobs.iterrows():
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO seen_jobs
+                (
+                    job_url,
+                    title,
+                    company,
+                    location,
+                    source,
+                    description
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["job_url"],
+                    row["title"],
+                    row["company"],
+                    row["location"],
+                    row["source"],
+                    row["description"],
+                ),
             )
 
-            new_jobs += 1
+            if cursor.rowcount:
+                new_count += 1
 
-        write_csv(connection)
+        connection.commit()
 
-        print(
-            f"\nNew jobs added: {new_jobs}"
+        all_jobs = pd.read_sql_query(
+            """
+            SELECT
+                title,
+                company,
+                location,
+                source,
+                job_url,
+                description,
+                found_at
+            FROM seen_jobs
+            ORDER BY found_at DESC
+            """,
+            connection,
         )
+
+        all_jobs.to_csv(
+            CSV_FILE,
+            index=False,
+            encoding="utf-8-sig",
+        )
+
+        print("\n==========================================")
+        print(f"Results this run: {len(jobs)}")
+        print(f"New jobs:         {new_count}")
+        print(f"Total database:   {len(all_jobs)}")
+        print(f"CSV:              {CSV_FILE}")
+        print("==========================================")
 
     finally:
         connection.close()
 
-    print("\nDONE")
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+    print("=" * 60)
+    print("LANGUAGE JOB SEARCH")
+    print("=" * 60)
+
+    collectors = [
+        ("JobSpy", collect_jobspy),
+        ("Pracuj.pl", collect_pracuj),
+        ("Just Join IT", collect_justjoinit),
+        ("No Fluff Jobs", collect_nofluffjobs),
+        ("RocketJobs", collect_rocketjobs),
+        ("Bulldogjob", collect_bulldogjob),
+        ("Jooble", collect_jooble),
+        ("theProtocol", collect_theprotocol),
+        ("Search discovery", collect_google_results),
+    ]
+
+    all_jobs = []
+
+    for name, collector in collectors:
+        try:
+            results = collector()
+
+            print(f"{name}: {len(results)} results")
+
+            all_jobs.extend(results)
+
+        except Exception as error:
+            print(f"{name} FAILED: {error}")
+
+    jobs = normalize_jobs(all_jobs)
+
+    save_jobs(jobs)
 
 
 if __name__ == "__main__":
-    configure_geocoder()
-    run()
+    main()
