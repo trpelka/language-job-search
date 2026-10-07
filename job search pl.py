@@ -19,7 +19,10 @@ CSV_FILE = BASE_DIR / "jobs.csv"
 
 LOCATION = "Poland"
 
+LOCATION = "Poland"
+
 SEARCH_TERMS = [
+    # --- translation / language ---
     "translator",
     "localization",
     "localisation",
@@ -40,6 +43,43 @@ SEARCH_TERMS = [
     "Portuguese translator",
     "Dutch translator",
     "Romanian translator",
+
+    # --- OSINT / research ---
+    "OSINT analyst remote",
+    "OSINT researcher remote",
+    "due diligence",
+    "due diligence research remote",
+    "open source intelligence analyst",
+    "multilingual researcher remote",
+    "investigative researcher remote",
+    "threat intelligence analyst remote",
+
+    # --- KYC ---
+    "KYC analyst remote",
+    "KYC specialist remote",
+    "KYC onboarding analyst remote",
+    "KYC researcher",
+    "client due diligence analyst",
+    "customer due diligence remote",
+    "enhanced due diligence analyst",
+    "EDD analyst remote",
+    "multilingual KYC analyst",
+    "German speaking KYC",
+    "Polish speaking KYC",
+
+    # --- AML / financial crime ---
+    "AML analyst remote",
+    "AML specialist remote",
+    "AML compliance analyst",
+    "AML investigator remote",
+    "financial crime analyst remote",
+    "financial crime investigator",
+    "sanctions screening analyst",
+    "sanctions analyst remote",
+    "adverse media analyst",
+    "transaction monitoring analyst remote",
+    "compliance analyst remote",
+    "fraud analyst remote",
 ]
 
 LANGUAGES = [
