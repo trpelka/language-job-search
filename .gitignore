@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# Test and lint caches
+.pytest_cache/
+.ruff_cache/
+
+# Generated run report (uploaded as a workflow artifact and shown in the step summary)
+reports/
+
+# OS noise
+.DS_Store
+Thumbs.db
