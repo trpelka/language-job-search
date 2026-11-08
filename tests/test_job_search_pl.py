@@ -1,3 +1,5 @@
+import pandas as pd
+
 import job_search_pl as bot
 
 
@@ -65,3 +67,25 @@ def test_collector_keys_are_unique():
     keys = [key for key, _, _ in bot.COLLECTORS]
 
     assert len(keys) == len(set(keys))
+
+
+def test_recent_jobs_keeps_only_rows_inside_retention_window():
+    now = pd.Timestamp.now(tz="UTC")
+    frame = pd.DataFrame(
+        {
+            "found_at": [
+                (now - pd.Timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S"),
+                (now - pd.Timedelta(days=10)).strftime("%Y-%m-%d %H:%M:%S"),
+            ]
+        }
+    )
+
+    kept = bot.recent_jobs(frame, days=7)
+
+    assert len(kept) == 1
+
+
+def test_recent_jobs_handles_empty_frame():
+    frame = bot.normalize_jobs([])
+
+    assert bot.recent_jobs(frame).empty

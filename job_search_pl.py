@@ -144,6 +144,7 @@ TRACKING_PARAMS = {
     "trk",
 }
 REPORT_FILE = BASE_DIR / "reports" / "latest.md"
+CSV_RETENTION_DAYS = int(os.getenv("CSV_RETENTION_DAYS", "7"))
 RUN_STARTED = time.monotonic()
 
 HEADERS = {
@@ -805,6 +806,18 @@ def normalize_jobs(jobs):
 # DATABASE + CSV
 # ============================================================
 
+def recent_jobs(frame, days=None):
+    """Keep only rows found within the retention window used for the committed CSV."""
+    if frame.empty:
+        return frame
+
+    days = CSV_RETENTION_DAYS if days is None else days
+    timestamps = pd.to_datetime(frame["found_at"], errors="coerce", utc=True)
+    cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=days)
+
+    return frame[timestamps >= cutoff]
+
+
 def write_report(new_jobs, total, new_by_source, dry_run=False):
     REPORT_FILE.parent.mkdir(parents=True, exist_ok=True)
 
@@ -912,7 +925,9 @@ def save_jobs(jobs, dry_run=False):
             connection,
         )
 
-        all_jobs.to_csv(
+        csv_jobs = recent_jobs(all_jobs)
+
+        csv_jobs.to_csv(
             CSV_FILE,
             index=False,
             encoding="utf-8-sig",
@@ -922,6 +937,7 @@ def save_jobs(jobs, dry_run=False):
         print(f"Results this run: {len(jobs)}")
         print(f"New jobs:         {len(new_jobs)}")
         print(f"Total database:   {len(all_jobs)}")
+        print(f"CSV (last {CSV_RETENTION_DAYS} days): {len(csv_jobs)}")
         print(f"CSV:              {CSV_FILE}")
         print("==========================================")
 

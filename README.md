@@ -30,11 +30,11 @@ Every run:
 
 Each run writes:
 
-- `jobs.csv` — every job ever found, newest first (UTF-8 BOM, opens cleanly in Excel)
-- `local_jobs.db` — SQLite database used for de-duplication
+- `jobs.csv` — the last 7 days of jobs, newest first (UTF-8 BOM, opens cleanly in Excel)
+- `local_jobs.db` — full de-duplication database; kept on the `data` branch, not in `main`
 - `reports/latest.md` — summary for the latest run (git-ignored, uploaded as an artifact)
 
-Duplicate detection is by normalized `job_url`, so re-running the script never inflates the CSV.
+Duplicate detection is by normalized `job_url`, so re-running the script never inflates the CSV. The CSV is pruned to `CSV_RETENTION_DAYS` (default `7`) on every run; the database keeps the full history needed for de-duplication.
 
 ## Quick start
 
@@ -90,6 +90,7 @@ Runtime settings can be set through the environment:
 | `MAX_RUNTIME_MIN` | `45` | Hard stop for the whole run, in minutes |
 | `RESULTS_WANTED` | `50` | Results per JobSpy query |
 | `HOURS_OLD` | `168` | JobSpy lookback window, in hours |
+| `CSV_RETENTION_DAYS` | `7` | Days of jobs written to the committed CSV |
 | `DESCRIPTION_LIMIT` | `4000` | Maximum stored description length |
 | `JOBSPY_SITES` | `indeed,linkedin` | Comma-separated JobSpy boards |
 | `JOBSPY_PROXIES` | empty | `user:pass@host:port,...` for blocked boards |
@@ -104,13 +105,35 @@ Set them in the shell (`$env:MAX_RUNTIME_MIN="20"` on Windows) or in the workflo
 title, company, location, source, job_url, description, found_at
 ```
 
-The SQLite table `seen_jobs` stores the same fields plus `job_url` as the primary key. To start fresh, delete both data files — the next run recreates them.
+The SQLite table `seen_jobs` stores the same fields plus `job_url` as the primary key. To start fresh, delete `local_jobs.db` locally or delete the `data` branch — the next run recreates an empty database.
 
 `reports/latest.md` contains the run mode, new-job count, a per-source table and up to 25 new listings. It is printed into the GitHub Actions step summary on every run.
 
+## Data and storage
+
+Two files are deliberately separated:
+
+| Data | Where | Size (typical) | Why |
+| --- | --- | --- | --- |
+| `jobs.csv` | `main`, rolling 7 days | ~1.3 MB | Humans browse and diff it; small enough to commit twice a day |
+| `local_jobs.db` | `data` branch, single rolling commit | ~11 MB | Full de-duplication history without growing `main` |
+
+The `data` branch is rewritten with `git push --force` on every run, so it always contains exactly one commit and one database file. Its storage footprint is therefore the size of the current database, not its history.
+
+Why not Actions cache? The cache is convenient but limited to **10 GB per repository**, entries are evicted after **7 days without access**, and there is no API to seed it. The rolling `data` branch has no such eviction, survives pauses in the schedule, and is inspectable in the repository.
+
+For reference, on GitHub Free:
+
+- **Actions minutes and storage are free for public repositories** (2,000 minutes/month and 500 MB storage are the private-repo allowances).
+- **Actions cache:** 10 GB per repository, entries expire after 7 days unused.
+- **Artifacts:** 90-day default retention; here only the tiny Markdown report is uploaded.
+- **Repository:** GitHub recommends staying under 1 GB; files over 100 MB trigger a warning and pushes over 2 GB are blocked.
+
+The old blobs already in `main` history are not reclaimed by deleting the file now — that would require a history rewrite, which is not done here.
+
 ## Automation
 
-`.github/workflows/run.yml` runs the search twice a day (`08:00` and `20:00` UTC) and commits the updated CSV and database back to the repository. It also writes a run summary, uploads `reports/latest.md` as an artifact and can be triggered manually from the **Actions** tab.
+`.github/workflows/run.yml` runs the search twice a day (`08:00` and `20:00` UTC). It restores `local_jobs.db` from the `data` branch, commits the rolling 7-day `jobs.csv` to `main`, force-pushes the updated database back to `data`, writes a run summary, uploads `reports/latest.md` as an artifact and can be triggered manually from the **Actions** tab.
 
 No secrets are required; the workflow uses the default `GITHUB_TOKEN` with `contents: write`.
 
@@ -124,7 +147,7 @@ ruff check .
 pytest
 ```
 
-The tests cover URL normalization, normalization/de-duplication, description truncation, CLI defaults and collector registry integrity. They do not touch the network.
+The tests cover URL normalization, normalization/de-duplication, description truncation, 7-day CSV retention, CLI defaults and collector registry integrity. They do not touch the network.
 
 ## Limitations
 
@@ -132,4 +155,4 @@ The tests cover URL normalization, normalization/de-duplication, description tru
 - JobSpy sources (especially LinkedIn and Glassdoor) rate-limit datacenter IPs such as GitHub Actions runners. Local runs usually return more results; proxies help.
 - Descriptions are only as complete as the page exposes; some boards return titles without a full description.
 - No salary normalization or relevance ranking yet — the output is intentionally a raw, de-duplicated feed.
-- `jobs.csv` and `local_jobs.db` grow forever. For long-term use, move them to an actions cache or a separate data branch.
+- `local_jobs.db` grows with every new URL. It is kept out of `main`, but the `data` branch will grow to tens of megabytes over years; prune `seen_jobs` if that ever matters.

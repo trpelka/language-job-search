@@ -12,6 +12,9 @@ venv/
 # Generated run report (uploaded as a workflow artifact and shown in the step summary)
 reports/
 
+# De-duplication database lives on the rolling `data` branch, not in main
+local_jobs.db
+
 # OS noise
 .DS_Store
 Thumbs.db
