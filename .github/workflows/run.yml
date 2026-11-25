@@ -61,6 +61,8 @@ jobs:
 
       - name: Persist de-duplication database
         if: always()
+        env:
+          GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ ! -f local_jobs.db ]; then
             echo "No database to persist."
@@ -74,7 +76,10 @@ jobs:
           git -c user.name="github-actions[bot]" \
               -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
               commit -q -m "data $(date -u +'%Y-%m-%d %H:%M')"
-          git push --force "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" data
+          # Keep the token out of the URL: URLs appear in `git remote -v`,
+          # error messages and logs. The bearer header is not printed.
+          git remote add origin "https://github.com/${{ github.repository }}.git"
+          git -c http.extraheader="AUTHORIZATION: bearer $GIT_TOKEN" push --force origin data
 
       - name: Save recent jobs
         run: |
